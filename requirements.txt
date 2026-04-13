@@ -1,0 +1,9 @@
+boto3
+numpy==1.26.4
+rasterio
+geopandas
+pyogrio
+fiona
+shapely
+pyproj
+pydantic
