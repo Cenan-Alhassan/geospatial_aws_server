@@ -12,8 +12,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../s
 
 import main
 
-import main
-
 # --- CRITICAL FIX 1: Mock the Environment Variable ---
 # This ensures the Lambda Handler doesn't instantly fail with a 500 error
 main.BUCKET_NAME = "fake-test-bucket"
