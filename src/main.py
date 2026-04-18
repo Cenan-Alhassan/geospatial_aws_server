@@ -1,7 +1,7 @@
 import json
 import os
 import boto3
-import base64  # Added missing import for PNG encoding 🛰️
+import base64  # Added missing import for PNG encoding 
 import rasterio
 import geopandas as gpd
 import numpy as np
@@ -32,7 +32,7 @@ class ApiGatewayEvent(BaseModel):
 def get_s3_file_structure(bucket_name: str, folder_name: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Lists S3 objects under a prefix and returns a nested dictionary
-    representing the exact folder structure. 🌳
+    representing the exact folder structure.
     - Keys are folder/file names.
     - Values are either nested dictionaries (for folders) or
       full S3 paths (for files).
@@ -111,7 +111,7 @@ def process_tif_to_png(file_path: str) -> Tuple[Optional[str], Optional[str]]:
     if not os.path.exists(file_path):
         return None, "Raster source file not found."
 
-    # Using your descriptive naming convention 🖼️
+    # Using your descriptive naming convention 
     temp_png_path: str = file_path + "_temp_output.png"
 
     try:
@@ -120,7 +120,7 @@ def process_tif_to_png(file_path: str) -> Tuple[Optional[str], Optional[str]]:
             image_array: np.ndarray = src.read(1)  # read first band of tif
             nodata_val = src.nodata
 
-            # Exclude NoData from min/max calculations 🔢
+            # Exclude NoData from min/max calculations 
             if nodata_val is not None:
                 valid_data = np.ma.masked_equal(image_array, nodata_val)
                 min_val, max_val = np.min(valid_data), np.max(valid_data)
@@ -172,7 +172,7 @@ def get_geojson_data(file_path: str) -> Tuple[Optional[Dict[str, Any]], Optional
         # 1. Read the vector file into a GeoDataFrame
         gdf: gpd.GeoDataFrame = gpd.read_file(file_path)
 
-        # 2. FORCE CONVERSION to WGS84 (EPSG:4326) 🌎
+        # 2. FORCE CONVERSION to WGS84 (EPSG:4326) 
         # This ensures the coordinates work with web map libraries
         if gdf.crs != "EPSG:4326":
             gdf = gdf.to_crs(epsg=4326)
@@ -211,7 +211,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     # --- DYNAMIC ROUTE: get-file-structure (e.g., /api/get-file-structure/portfolio_data) ---
     if len(parts) >= 3 and parts[0] == "api" and parts[1] == "get-file-structure":
-        # Join any remaining parts to support nested root folders if needed 📂
+        # Join any remaining parts to support nested root folders if needed 
         folder_name: str = '/'.join(parts[2:])
 
         # We explicitly type these variables accepting the function output
