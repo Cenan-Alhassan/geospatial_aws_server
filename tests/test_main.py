@@ -91,51 +91,6 @@ class TestGetS3FileStructure(unittest.TestCase):
         self.assertEqual(error, "AWS Access Denied")
 
 
-class TestGetGeojsonData(unittest.TestCase):
-
-    @patch('main.os.path.exists')
-    def test_file_not_found(self, mock_exists):
-        """Test that missing files are caught before processing."""
-        # ARRANGE: Pretend the file is not on the disk
-        mock_exists.return_value = False
-
-        # ACT
-        result, error = main.get_geojson_data("/tmp/missing.geojson")
-
-        # ASSERT
-        self.assertIsNone(result)
-        self.assertEqual(error, "Vector source file not found.")
-
-    @patch('main.gpd.read_file')
-    @patch('main.os.path.exists')
-    # The order of the parameters in the test function is reversed from the order of the decorators.
-    def test_successful_reprojection(self, mock_exists, mock_read_file):
-        """Test that vector files in the wrong CRS are successfully converted to EPSG:4326."""
-        # Must first pretend the file exists 
-        mock_exists.return_value = True
-
-        # ARRANGE: Create a fake GeoDataFrame object
-        mock_gdf = MagicMock()
-        # Pretend the file was uploaded in Web Mercator (EPSG:3857) instead of EPSG:4326
-        mock_gdf.crs = "EPSG:3857" 
-        
-        # When .to_crs() is called, just return the mock object itself
-        mock_gdf.to_crs.return_value = mock_gdf 
-        # When .to_json() is called, return a valid JSON string
-        mock_gdf.to_json.return_value = '{"type": "FeatureCollection"}' 
-        
-        mock_read_file.return_value = mock_gdf
-
-        # ACT
-        result, error = main.get_geojson_data("/tmp/valid.geojson")
-
-        # ASSERT
-        self.assertIsNone(error)
-        self.assertEqual(result, {"type": "FeatureCollection"})
-        # Verify our code actually attempted to force the EPSG:4326 conversion!
-        mock_gdf.to_crs.assert_called_with(epsg=4326)
-
-
 class TestProcessTifToPng(unittest.TestCase):
 
     @patch('main.os.path.exists')
@@ -216,70 +171,53 @@ class TestLambdaHandler(unittest.TestCase):
 
 
     @patch('main.s3.download_file')
-    @patch('main.os.path.exists')
-    @patch('main.os.remove')
-    def test_unsupported_extension(self, mock_remove, mock_exists, mock_download):
-        """Test that requesting an invalid file type (like .pdf) is rejected and cleaned up."""
-        # ARRANGE: Pretend the download worked, and the file exists in /tmp/
-        mock_exists.return_value = True
-
+    def test_unsupported_extension(self, mock_download):
+        """Test that requesting an invalid file type (like .pdf) is rejected and not downloaded."""
         event = {
             "pathParameters": {
                 "proxy": "api/get-data/portfolio/document.pdf"
             }
         }
 
-        # ACT
         response = main.lambda_handler(event, None)
 
-        # ASSERT: Should return 404 Not Found
         self.assertEqual(response["statusCode"], 404)
         self.assertIn("Unsupported extension", response["body"])
         
-        # CRITICAL: Verify that the os.remove function removed the temporary file
-        mock_remove.assert_called_once_with("/tmp/portfolio_document.pdf")
+        # CRITICAL: Verify we didn't waste time/money downloading the invalid file
+        mock_download.assert_not_called()
 
 
-    @patch('main.s3.download_file')
-    @patch('main.get_geojson_data')
-    @patch('main.os.path.exists')
-    @patch('main.os.remove')
-    def test_backend_crash_cleanup(self, mock_remove, mock_exists, mock_get_geojson, mock_download):
-        """Test that if a processing function crashes, the server returns 500 and cleans up."""
-        mock_exists.return_value = True
-        
-        # ARRANGE: Force the helper function to crash
-        mock_get_geojson.side_effect = Exception("A catastrophic failure occurred")
+    @patch('main.s3.generate_presigned_url')
+    def test_backend_crash_cleanup(self, mock_presigned_url):
+        """Test that if URL generation crashes, the server returns 500 gracefully."""
+        # ARRANGE: Force the boto3 presigned URL generator to crash
+        mock_presigned_url.side_effect = Exception("A catastrophic AWS failure occurred")
 
         event = {
             "pathParameters": {
-                "proxy": "api/get-data/portfolio/map.geojson"
+                "proxy": "api/get-data/portfolio/map.gpkg" 
             }
         }
 
         # ACT
         response = main.lambda_handler(event, None)
 
-        # ASSERT: Should catch the error, return 500, and NOT crash the whole container
+        # ASSERT: Should catch the error and return 500
         self.assertEqual(response["statusCode"], 500)
-        self.assertIn("catastrophic failure", response["body"])
-        
-        # CRITICAL: Verify it still deleted the temporary file despite the crash
-        mock_remove.assert_called_once_with("/tmp/portfolio_map.geojson")
+        self.assertIn("catastrophic AWS failure", response["body"])
 
     @patch('main.s3.download_file')
-    @patch('main.get_geojson_data')
-    @patch('main.os.path.exists')
-    @patch('main.os.remove')
-    def test_vector_happy_path(self, mock_remove, mock_exists, mock_get_geojson, mock_download):
-        """Test that a valid vector request routes correctly and returns a 200 OK with JSON."""
-        # ARRANGE: Simulate successful S3 download and vector processing
-        mock_exists.return_value = True
-        mock_get_geojson.return_value = ({"type": "FeatureCollection"}, None)
+    @patch('main.s3.generate_presigned_url')
+    def test_vector_happy_path(self, mock_presigned_url, mock_download):
+        """Test that a valid vector request routes correctly and returns a Presigned URL."""
+        # ARRANGE: Tell the mock what fake URL to return
+        fake_url = "https://fake-bucket.s3.amazonaws.com/portfolio/project_a/map.gpkg?signature=123"
+        mock_presigned_url.return_value = fake_url
 
         event = {
             "pathParameters": {
-                "proxy": "api/get-data/portfolio/project_a/map.geojson"
+                "proxy": "api/get-data/portfolio/project_a/map.gpkg"
             }
         }
 
@@ -289,12 +227,12 @@ class TestLambdaHandler(unittest.TestCase):
         # ASSERT: Check HTTP packaging
         self.assertEqual(response["statusCode"], 200)
         
-        # Verify the body is the JSON we expect
+        # Verify the body contains the tiny URL payload
         body = json.loads(response["body"])
-        self.assertEqual(body, {"type": "FeatureCollection"})
+        self.assertEqual(body, {"url": fake_url})
         
-        # Verify it cleaned up the temporary S3 download
-        mock_remove.assert_called_once_with("/tmp/portfolio_project_a_map.geojson")
+        # CRITICAL: Verify we completely bypassed the /tmp/ download process
+        mock_download.assert_not_called()
 
 
     @patch('main.s3.download_file')
