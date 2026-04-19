@@ -194,7 +194,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "Access-Control-Allow-Origin": "*"
     }
 
-    # 1. Parse and Validate the request from API Gateway using Pydantic
+    # Parse and Validate the request from API Gateway using Pydantic
     try:
         validated_event = ApiGatewayEvent(**event)
         params: Dict[str, str] = validated_event.pathParameters or {}
@@ -240,74 +240,61 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     local_path: str = f"/tmp/{safe_filename}"
 
     try:
-        # 2. Download from S3 to /tmp
+        # --- 1. VECTOR PATH (NO DOWNLOAD REQUIRED) ---
+        if command_path == "api/get-data" and file_name.endswith(VECTOR_FILES):
+            presigned_url = s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': BUCKET_NAME, 'Key': s3_key},
+                ExpiresIn=3600
+            )
+            return {"statusCode": 200, "headers": headers, "body": json.dumps({"url": presigned_url})}
+
+        # --- 2. ROUTE & EXTENSION VALIDATION ---
+        # If the route is wrong, reject it
+        if command_path not in ["api/metadata", "api/get-data"]:
+            return {"statusCode": 404, "headers": headers, "body": json.dumps({"error": "Unsupported route"})}
+            
+        # The only remaining valid scenario is a Raster. If it's not a raster, reject it.
+        if not file_name.endswith(RASTER_FILES):
+            return {"statusCode": 404, "headers": headers, "body": json.dumps({"error": "Unsupported extension"})}
+
+        # --- 3. DOWNLOAD REQUIRED FOR RASTERS ---
+        # We only reach here if the request is a valid route AND a supported raster
         s3.download_file(BUCKET_NAME, s3_key, local_path)
 
-        # 3. Route to your existing processing functions
-
         # --- METADATA PATH ---
-        if command_path == "api/metadata" and file_name.endswith(RASTER_FILES):
+        if command_path == "api/metadata":
             metadata_dict: Optional[Dict[str, Any]]
             meta_error: Optional[str]
             metadata_dict, meta_error = get_metadata(local_path)
-            os.remove(local_path)  # Clean up metadata source
+            os.remove(local_path)  # Clean up
 
             if meta_error:
                 return {"statusCode": 500, "headers": headers, "body": json.dumps({"error": meta_error})}
-
             return {"statusCode": 200, "headers": headers, "body": json.dumps(metadata_dict)}
 
+        # --- RASTER DATA PATH ---
         elif command_path == "api/get-data":
+            png_path: Optional[str]
+            raster_error: Optional[str]
+            png_path, raster_error = process_tif_to_png(local_path)
 
-            # --- RASTER PATH ---
-            if file_name.endswith(RASTER_FILES):
-                png_path: Optional[str]
-                raster_error: Optional[str]
-                png_path, raster_error = process_tif_to_png(local_path)
+            if raster_error:
+                if os.path.exists(local_path): os.remove(local_path)
+                return {"statusCode": 500, "headers": headers, "body": json.dumps({"error": raster_error})}
 
-                if raster_error:
-                    if os.path.exists(local_path): os.remove(local_path)
-                    return {"statusCode": 500, "headers": headers, "body": json.dumps({"error": raster_error})}
+            with open(png_path, "rb") as image_file:  # type: ignore
+                encoded_string: str = base64.b64encode(image_file.read()).decode('utf-8')
 
-                # 4. Convert PNG to Base64
-                with open(png_path, "rb") as image_file:  # type: ignore
-                    encoded_string: str = base64.b64encode(image_file.read()).decode('utf-8')
+            os.remove(local_path)
+            os.remove(png_path)  # type: ignore
 
-                # 5. Cleanup local files
-                os.remove(local_path)
-                os.remove(png_path)  # type: ignore
-
-                return {
-                    "statusCode": 200,
-                    "headers": {**headers, "Content-Type": "image/png"},
-                    "body": encoded_string,
-                    "isBase64Encoded": True
-                }
-
-            # --- VECTOR PATH ---
-            elif file_name.endswith(VECTOR_FILES):
-                # Generate a secure, temporary URL directly to the S3 object
-                try:
-                    presigned_url = s3.generate_presigned_url(
-                        'get_object',
-                        Params={'Bucket': BUCKET_NAME, 'Key': s3_key},
-                        ExpiresIn=3600  # URL expires in 1 hour
-                    )
-                    
-                    # Return just the URL, a tiny payload that will never hit the 6MB limit
-                    response_payload = {"url": presigned_url}
-                    
-                    if os.path.exists(local_path): os.remove(local_path)
-                    
-                    return {"statusCode": 200, "headers": headers, "body": json.dumps(response_payload)}
-                    
-                except Exception as e:
-                    if os.path.exists(local_path): os.remove(local_path)
-                    return {"statusCode": 500, "headers": headers, "body": json.dumps({"error": f"Failed to generate Presigned URL: {str(e)}"})}
-
-        # Cleanup and error if no routes matched
-        if os.path.exists(local_path): os.remove(local_path)
-        return {"statusCode": 404, "headers": headers, "body": json.dumps({"error": "Unsupported route"})}
+            return {
+                "statusCode": 200,
+                "headers": {**headers, "Content-Type": "image/png"},
+                "body": encoded_string,
+                "isBase64Encoded": True
+            }
 
     except Exception as e:
         if os.path.exists(local_path): os.remove(local_path)
