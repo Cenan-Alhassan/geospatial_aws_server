@@ -286,19 +286,24 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
             # --- VECTOR PATH ---
             elif file_name.endswith(VECTOR_FILES):
-                geo_data: Optional[Dict[str, Any]]
-                vector_error: Optional[str]
-                geo_data, vector_error = get_geojson_data(local_path)
-                os.remove(local_path)
-
-                if vector_error:
-                    return {"statusCode": 500, "headers": headers, "body": json.dumps({"error": vector_error})}
-
-                return {"statusCode": 200, "headers": headers, "body": json.dumps(geo_data)}
-
-            # --- INVALID FILE EXTENSION ---
-            if os.path.exists(local_path): os.remove(local_path)
-            return {"statusCode": 404, "headers": headers, "body": json.dumps({"error": "Unsupported extension"})}
+                # Generate a secure, temporary URL directly to the S3 object
+                try:
+                    presigned_url = s3.generate_presigned_url(
+                        'get_object',
+                        Params={'Bucket': BUCKET_NAME, 'Key': s3_key},
+                        ExpiresIn=3600  # URL expires in 1 hour
+                    )
+                    
+                    # Return just the URL, a tiny payload that will never hit the 6MB limit
+                    response_payload = {"url": presigned_url}
+                    
+                    if os.path.exists(local_path): os.remove(local_path)
+                    
+                    return {"statusCode": 200, "headers": headers, "body": json.dumps(response_payload)}
+                    
+                except Exception as e:
+                    if os.path.exists(local_path): os.remove(local_path)
+                    return {"statusCode": 500, "headers": headers, "body": json.dumps({"error": f"Failed to generate Presigned URL: {str(e)}"})}
 
         # Cleanup and error if no routes matched
         if os.path.exists(local_path): os.remove(local_path)
