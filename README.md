@@ -13,10 +13,11 @@ Instead of pre-processing all your data or running a heavy, expensive GIS server
 **Core Capabilities:**
 * **Folder-Agnostic File Discovery:** Point it at any S3 folder prefix, and it returns a fully nested JSON file tree representing your storage architecture.
 * **On-the-Fly Raster Conversion:** Reads raw `.tif` satellite imagery, scales the data values, masks NoData pixels, and returns a Base64-encoded `.png` ready for web overlay.
-* **Dynamic Vector Reprojection:** Reads `.geojson`, `.shp`, and `.gpkg` files and forces conversion to WGS84 (`EPSG:4326`), serving them as web-standard GeoJSON payloads.
+* **Direct Vector Offloading:** Bypasses AWS Lambda's 6MB payload limits by generating secure, temporary S3 Presigned URLs for vector files (`.gpkg`, `.geojson`), allowing the frontend to download large datasets directly from the bucket.
 
 **Architecture Flow:**
-`Frontend Request` ➡️ `AWS API Gateway (Proxy)` ➡️ `AWS Lambda (This Container)` ➡️ `Fetch from S3` ➡️ `Process (Rasterio/GeoPandas)` ➡️ `Return Web Payload`
+* **For Rasters:** `Frontend Request` -> `API Gateway` -> `Lambda` -> `Fetch from S3` -> `Process (Rasterio)` -> `Return Base64 PNG`
+* **For Vectors:** `Frontend Request` -> `API Gateway` -> `Lambda` -> `Generate Presigned S3 URL` -> `Return URL to Frontend`
 
 ---
 
@@ -90,7 +91,7 @@ Once deployed (or running locally via the emulator), the server acts as a RESTfu
 
 ### Supported Formats
 * **Rasters:** `.tif` (Note: Single-value uniform rasters will return an error).
-* **Vectors:** `.geojson`, `.gpkg`, `.shp`.
+* **Vectors:** `.geojson`, `.gpkg` (Note: Raw `.shp` archives are not supported by the Presigned URL architecture. Please convert to GeoPackage or GeoJSON before uploading).
 
 ### Endpoints
 
@@ -101,9 +102,9 @@ Once deployed (or running locally via the emulator), the server acts as a RESTfu
 
 #### 2. Vector & Raster Data Retrieval
 * **Path:** `GET /api/get-data/{full_s3_file_path}`
-* **Description:** Dynamically fetches and converts the requested file for web map rendering.
-* **Returns (Vectors):** A web-standard `GeoJSON` dictionary. Native files are automatically reprojected to WGS84 (`EPSG:4326`).
-* **Returns (Rasters):** A Base64 encoded 8-bit `image/png`. Data values are scaled 0-255, and `NoData` pixels are made transparent.
+* **Description:** Generates a secure download link for vectors or converts rasters for web rendering.
+* **Returns (Vectors):** A JSON object containing a `url` string. This is a secure, temporary S3 Presigned URL (valid for 1 hour) allowing the frontend client to download the dataset directly, bypassing backend payload limits.
+* **Returns (Rasters):** A Base64 encoded 8-bit `image/png`. Data values are scaled 0-255, and NoData pixels are made transparent.
 
 #### 3. Raster Metadata Retrieval
 * **Path:** `GET /api/metadata/{full_s3_file_path}`
